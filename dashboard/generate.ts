@@ -204,8 +204,9 @@ function renderHtml(payload: unknown): string {
     --approve: #34c98a; --review: #e8b93d; --deny: #ef5a5a; --op: #a074e8;
   }
   @media (prefers-color-scheme: light) {
-    :root { --bg:#f5f7fa; --panel:#ffffff; --panel-2:#f0f3f7; --border:#dbe2ea; --text:#182230; --muted:#5c6b7a; }
+    :root:not([data-theme="dark"]) { --bg:#f5f7fa; --panel:#ffffff; --panel-2:#f0f3f7; --border:#dbe2ea; --text:#182230; --muted:#5c6b7a; }
   }
+  :root[data-theme="light"] { --bg:#f5f7fa; --panel:#ffffff; --panel-2:#f0f3f7; --border:#dbe2ea; --text:#182230; --muted:#5c6b7a; }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--text); font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; }
   header { padding:20px 24px; border-bottom:1px solid var(--border); }
