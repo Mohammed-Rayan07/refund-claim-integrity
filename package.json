@@ -1,0 +1,16 @@
+{
+  "name": "refund-claim-integrity",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Refund Claim Integrity Engine (RCIE) — defense-only refund claim verification. Razorpay AI Buildathon, Track 02.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "demo:spine": "node scripts/demo-spine.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

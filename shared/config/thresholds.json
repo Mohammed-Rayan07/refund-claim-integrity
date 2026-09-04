@@ -1,0 +1,19 @@
+{
+  "version": "thresholds-v1",
+  "integrity_gate": {
+    "refund_window_days": 30,
+    "velocity_window_days": 30,
+    "velocity_max_claims": 3,
+    "amount_tolerance_inr": 0
+  },
+  "decision": {
+    "base_threshold": 0.72,
+    "scaling_factor": 0.2,
+    "max_confidence_threshold": 0.97,
+    "reuse_cut": 0.9
+  },
+  "verifier": {
+    "timeout_ms": 20000,
+    "max_retries": 1
+  }
+}

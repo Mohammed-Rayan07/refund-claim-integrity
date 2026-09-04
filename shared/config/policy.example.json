@@ -1,0 +1,15 @@
+{
+  "version": "policy-v1",
+  "merchant_id": "MERCH_DEMO_001",
+  "auto_approve_ceiling": 5000,
+  "review_rules": [
+    { "id": "PR-01", "when": "exposure_above_ceiling", "outcome": "REVIEW" },
+    { "id": "PR-02", "when": "injection_suspected", "outcome": "REVIEW" },
+    { "id": "PR-03", "when": "verifier_unavailable", "outcome": "REVIEW" }
+  ],
+  "category_overrides": {
+    "electronics": { "auto_approve_ceiling": 2000 },
+    "apparel": { "auto_approve_ceiling": 5000 },
+    "grocery": { "auto_approve_ceiling": 1500 }
+  }
+}
