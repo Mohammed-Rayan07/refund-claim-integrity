@@ -38,6 +38,7 @@ export interface StoreAdapter {
   allAudit(): AuditEvent[];
 
   saveHumanReview(review: HumanReview): Promise<void>;
+  listHumanReviews(claimId?: string): Promise<HumanReview[]>;
 }
 
 export interface StoreSeed {
@@ -125,6 +126,12 @@ class MockStoreAdapter implements StoreAdapter {
 
   async saveHumanReview(review: HumanReview): Promise<void> {
     this.#humanReviews.push(review);
+  }
+
+  async listHumanReviews(claimId?: string): Promise<HumanReview[]> {
+    return claimId === undefined
+      ? [...this.#humanReviews]
+      : this.#humanReviews.filter((r) => r.claim_id === claimId);
   }
 }
 

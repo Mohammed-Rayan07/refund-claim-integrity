@@ -10,7 +10,9 @@
   "scripts": {
     "demo:spine": "node --env-file-if-exists=.env scripts/demo-spine.ts",
     "demo:decide": "node --env-file-if-exists=.env scripts/demo-decide.ts",
+    "demo:full": "node --env-file-if-exists=.env scripts/demo-full.ts",
     "eval": "node --env-file-if-exists=.env eval/report.ts",
+    "dashboard": "node --env-file-if-exists=.env dashboard/generate.ts",
     "typecheck": "tsc --noEmit",
     "fetch:fraudbench": "node --env-file-if-exists=.env eval/fraudbench/fetch.ts",
     "eval:live": "node --env-file-if-exists=.env eval/live_batch.ts"

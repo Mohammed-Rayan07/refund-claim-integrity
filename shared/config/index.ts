@@ -24,6 +24,28 @@ function readJson<T>(path: string): { value: T; raw: string } {
   return { value: JSON.parse(raw) as T, raw };
 }
 
+/**
+ * F14 - "the agent never invents a policy; anything not configured escalates."
+ *
+ * L4 (layers/L4-decision/index.ts) fires these policy-rule ids when their
+ * condition is met. This is the other half of that promise made checkable:
+ * every id the code can fire must be declared in the merchant's own policy
+ * file, or the config is rejected at load time rather than silently applying
+ * a rule the merchant never configured.
+ */
+const POLICY_RULES_CODE_CAN_FIRE = ['PR-01', 'PR-02', 'PR-03'] as const;
+
+function assertPolicyRulesDeclared(policy: Policy, policyPath: string): void {
+  const declared = new Set(policy.review_rules.map((r) => r.id));
+  const missing = POLICY_RULES_CODE_CAN_FIRE.filter((id) => !declared.has(id));
+  if (missing.length > 0) {
+    throw new Error(
+      `policy config is missing review_rules for [${missing.join(', ')}] - L4 can fire these ` +
+        `ids and the merchant must declare them explicitly. Add them to review_rules in ${policyPath}.`,
+    );
+  }
+}
+
 let cached: LoadedConfig | null = null;
 
 export function loadConfig(): LoadedConfig {
@@ -34,6 +56,7 @@ export function loadConfig(): LoadedConfig {
 
   const policy = readJson<Policy>(policyPath);
   const thresholds = readJson<Thresholds>(thresholdsPath);
+  assertPolicyRulesDeclared(policy.value, policyPath);
 
   const snapshot_id = createHash('sha256')
     .update(policy.raw)

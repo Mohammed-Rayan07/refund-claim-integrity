@@ -16,6 +16,7 @@ import { AuditLogger } from '../shared/lib/logger.ts';
 import { sanitiseClaimText, type SanitisedClaimText } from '../shared/lib/sanitiser.ts';
 import { CircuitBreaker, type BreakerSnapshot } from '../shared/lib/circuit.ts';
 import { assess, costOf, NO_SPEND, type ModelSpend } from '../shared/lib/budget.ts';
+import { reconstructContext } from '../shared/lib/replay.ts';
 import {
   runReuseDetection,
   type CatalogueImage,
@@ -41,6 +42,13 @@ export interface PipelineResult {
   required_confidence: number;
   /** True if L4 emitted a REVIEW with no reason code and the invariant repaired it. */
   silent_review_repaired: boolean;
+  /**
+   * F16 - true when this claim already had a decision on record and `resolve`
+   * returned that decision (reconstructed from the audit trail) instead of
+   * re-running the pipeline. No adapter, notifier or model call fires on this
+   * path: same claim in twice must produce one decision, not two.
+   */
+  idempotent_replay: boolean;
   /** True when the claim was settled without spending a model call (F17). */
   resolved_without_model_call: boolean;
   spend: ModelSpend;
@@ -81,6 +89,39 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
     cfg.circuit_breaker_consecutive_failures,
     cfg.circuit_breaker_cooldown_ms,
   );
+
+  // F16 - claim-level locking: two `resolve` calls for the same claim id that
+  // overlap in time (a retried webhook, a duplicate queue message) must not
+  // both run the pipeline. Concurrent callers await the same in-flight promise.
+  const inFlight = new Map<string, Promise<PipelineResult>>();
+
+  /**
+   * Builds a PipelineResult for a claim that already has a Decision on record,
+   * from the audit trail alone. No adapter, notifier or model call runs on this
+   * path - the point of idempotency is that the second call has NO side effects.
+   */
+  async function idempotentResult(claim: Claim): Promise<PipelineResult> {
+    const ctx = await reconstructContext(claim.id, { payments: deps.payments, store: deps.store, config: deps.config });
+    return {
+      claim,
+      sanitised: sanitiseClaimText(claim.claim_text),
+      gate: ctx.gate,
+      reuse: null,
+      verifier: ctx.verifier,
+      verifier_absence: ctx.verifier_absence,
+      decision: ctx.original,
+      summary: `idempotent: claim ${claim.id} already decided at ${ctx.original.decided_at} - returning the recorded decision, nothing re-run`,
+      decision_basis: 'idempotent_replay',
+      injection_suspected: ctx.verifier?.ok ? ctx.verifier.verdict.injection_suspected : false,
+      required_confidence: Number.NaN,
+      silent_review_repaired: false,
+      idempotent_replay: true,
+      resolved_without_model_call: true,
+      spend: NO_SPEND,
+      over_budget: false,
+      breaker: breaker.snapshot(),
+    };
+  }
 
   /** Last-resort fail-safe: an unexpected throw must still produce a REVIEW. */
   async function failSafe(
@@ -125,6 +166,7 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
       decision_basis: 'unhandled_error',
       injection_suspected: false,
       silent_review_repaired: false,
+      idempotent_replay: false,
       required_confidence: Number.NaN,
       resolved_without_model_call: true,
       spend: NO_SPEND,
@@ -133,10 +175,7 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
     };
   }
 
-  return {
-    breaker: () => breaker.snapshot(),
-
-    async resolve(claim: Claim): Promise<PipelineResult> {
+  async function resolveOnce(claim: Claim): Promise<PipelineResult> {
       const startedAt = performance.now();
 
       audit.record(claim.id, 'PIPELINE', 'claim_received', claim, {
@@ -350,11 +389,29 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
         injection_suspected: outcome.injection_suspected,
         required_confidence: outcome.required_confidence,
         silent_review_repaired: outcome.silent_review_repaired,
+        idempotent_replay: false,
         resolved_without_model_call: !modelCallMade,
         spend,
         over_budget: budget.over_cost_budget || budget.over_latency_budget,
         breaker: breaker.snapshot(),
       };
+  }
+
+  return {
+    breaker: () => breaker.snapshot(),
+
+    async resolve(claim: Claim): Promise<PipelineResult> {
+      // F16 - already decided: return the recorded decision, run nothing.
+      const already = await deps.store.getDecision(claim.id);
+      if (already) return idempotentResult(claim);
+
+      // F16 - already in flight: join the same promise rather than racing it.
+      const running = inFlight.get(claim.id);
+      if (running) return running;
+
+      const p = resolveOnce(claim).finally(() => inFlight.delete(claim.id));
+      inFlight.set(claim.id, p);
+      return p;
     },
   };
 }
