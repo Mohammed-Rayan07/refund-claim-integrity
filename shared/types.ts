@@ -124,5 +124,7 @@ export interface Thresholds {
   verifier: {
     timeout_ms: number;
     max_retries: number;
+    circuit_breaker_consecutive_failures: number;
+    circuit_breaker_cooldown_ms: number;
   };
 }

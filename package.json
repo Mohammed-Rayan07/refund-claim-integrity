@@ -7,6 +7,7 @@
   "engines": { "node": ">=20" },
   "scripts": {
     "demo:spine": "node scripts/demo-spine.ts",
+    "demo:decide": "node scripts/demo-decide.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
