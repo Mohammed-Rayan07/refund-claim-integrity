@@ -59,7 +59,20 @@ function newHarness(): Harness {
     fallback: UNSCRIPTED_FALLBACK,
     model_version: MODEL_VERSION,
   });
-  return { store, notifier, llm, pipeline: createPipeline({ payments, store, notifier, llm, config }) };
+  return {
+    store,
+    notifier,
+    llm,
+    pipeline: createPipeline({
+      payments,
+      store,
+      notifier,
+      llm,
+      config,
+      catalogue: fixtures.catalogue,
+      shared_index: fixtures.shared_index,
+    }),
+  };
 }
 
 function header(): void {

@@ -1,7 +1,5 @@
 /**
- * The spine: L0 (sanitise) -> L1 (deterministic gate) -> L3 (verifier) -> L4 (decide).
- *
- * L2 reuse detection arrives in Chunk 3; its input to L4 is null until then.
+ * The spine: L0 (sanitise) -> L1 (gate) -> L2 (reuse) -> L3 (verifier) -> L4 (decide).
  *
  * Fail-safe direction (F11): every error, timeout, malformed response and open
  * circuit lands on REVIEW. There is no path in this file - or anywhere below it -
@@ -16,6 +14,13 @@ import type { LlmAdapter } from '../shared/adapters/llm.ts';
 import { AuditLogger } from '../shared/lib/logger.ts';
 import { sanitiseClaimText, type SanitisedClaimText } from '../shared/lib/sanitiser.ts';
 import { CircuitBreaker, type BreakerSnapshot } from '../shared/lib/circuit.ts';
+import { assess, costOf, NO_SPEND, type ModelSpend } from '../shared/lib/budget.ts';
+import {
+  runReuseDetection,
+  type CatalogueImage,
+  type ReuseResult,
+  type SharedIndexEntry,
+} from './L2-reuse/index.ts';
 import type { Claim, Decision } from '../shared/types.ts';
 import { runIntegrityGate, type IntegrityGateResult } from './L1-deterministic/index.ts';
 import { runVerifier, type VerifierResult } from './L3-verifier/index.ts';
@@ -25,6 +30,7 @@ export interface PipelineResult {
   claim: Claim;
   sanitised: SanitisedClaimText;
   gate: IntegrityGateResult | null;
+  reuse: ReuseResult | null;
   verifier: VerifierResult | null;
   verifier_absence: VerifierAbsence | null;
   decision: Decision;
@@ -34,6 +40,8 @@ export interface PipelineResult {
   required_confidence: number;
   /** True when the claim was settled without spending a model call (F17). */
   resolved_without_model_call: boolean;
+  spend: ModelSpend;
+  over_budget: boolean;
   breaker: BreakerSnapshot;
 }
 
@@ -49,11 +57,16 @@ export interface PipelineDeps {
   /** Absent = deterministic-only mode: L1 runs, nothing is ever auto-approved. */
   llm?: LlmAdapter;
   config: LoadedConfig;
+  /** Merchant product photography for L2 stock-image detection. */
+  catalogue?: CatalogueImage[];
+  /** Cross-merchant hash-only index for L2. */
+  shared_index?: SharedIndexEntry[];
 }
 
 export function createPipeline(deps: PipelineDeps): Pipeline {
   const audit = new AuditLogger({ append: (event) => deps.store.appendAudit(event) });
   const cfg = deps.config.thresholds.verifier;
+  const reuseCut = deps.config.thresholds.decision.reuse_cut;
   const breaker = new CircuitBreaker(
     cfg.circuit_breaker_consecutive_failures,
     cfg.circuit_breaker_cooldown_ms,
@@ -94,6 +107,7 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
       claim,
       sanitised: sanitiseClaimText(claim.claim_text),
       gate: null,
+      reuse: null,
       verifier: null,
       verifier_absence: 'not_reached',
       decision,
@@ -102,6 +116,8 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
       injection_suspected: false,
       required_confidence: Number.NaN,
       resolved_without_model_call: true,
+      spend: NO_SPEND,
+      over_budget: false,
       breaker: breaker.snapshot(),
     };
   }
@@ -151,12 +167,31 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
         );
       }
 
-      // --- L3: verifier, only for claims that survived L1 ---
+      // --- L2: evidence reuse, for claims that survived L1 ---
+      const evidence = gate.passed ? await deps.store.listEvidenceForClaim(claim.id) : [];
+      let reuse: ReuseResult | null = null;
+      if (gate.passed) {
+        try {
+          reuse = await runReuseDetection(claim, evidence, {
+            store: deps.store,
+            config: deps.config,
+            audit,
+            catalogue: deps.catalogue ?? [],
+            shared_index: deps.shared_index ?? [],
+          });
+        } catch (err) {
+          return failSafe(claim, startedAt, 'L2', err instanceof Error ? err.message : String(err));
+        }
+      }
+      const reuseSettles = reuse !== null && reuse.max_similarity > reuseCut;
+
+      // --- L3: verifier, only for claims L1 and L2 did not already settle ---
       let verifier: VerifierResult | null = null;
       let verifier_absence: VerifierAbsence | null = null;
       let modelCallMade = false;
+      let spend: ModelSpend = { ...NO_SPEND };
 
-      if (!gate.passed) {
+      if (!gate.passed || reuseSettles) {
         // Short-circuited deterministically: no model budget spent.
         verifier_absence = 'not_reached';
       } else if (!deps.llm) {
@@ -175,7 +210,6 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
           { ...breaker.snapshot() },
         );
       } else {
-        const evidence = await deps.store.listEvidenceForClaim(claim.id);
         try {
           verifier = await runVerifier(
             {
@@ -188,6 +222,11 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
             { llm: deps.llm!, config: deps.config, audit },
           );
           modelCallMade = verifier.attempts > 0;
+          spend = {
+            input_tokens: verifier.input_tokens,
+            output_tokens: verifier.output_tokens,
+            calls: verifier.attempts,
+          };
         } catch (err) {
           return failSafe(
             claim,
@@ -250,11 +289,18 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
           claim,
           gate,
           sanitised,
-          reuse: null, // L2 arrives in Chunk 3
+          reuse:
+            reuse && reuse.best
+              ? {
+                  max_similarity: reuse.max_similarity,
+                  source: reuse.best.source,
+                  matched_ref: reuse.best.matched_ref,
+                }
+              : null,
           verifier,
           verifier_absence,
           latency_ms: Math.round(performance.now() - startedAt),
-          cost_inr: 0,
+          cost_inr: costOf(spend, deps.config),
         },
         { config: deps.config, audit },
       );
@@ -272,10 +318,13 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
         });
       }
 
+      const budget = assess(spend, Math.round(performance.now() - startedAt), deps.config);
+
       return {
         claim,
         sanitised,
         gate,
+        reuse,
         verifier,
         verifier_absence,
         decision: outcome.decision,
@@ -284,6 +333,8 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
         injection_suspected: outcome.injection_suspected,
         required_confidence: outcome.required_confidence,
         resolved_without_model_call: !modelCallMade,
+        spend,
+        over_budget: budget.over_cost_budget || budget.over_latency_budget,
         breaker: breaker.snapshot(),
       };
     },

@@ -31,7 +31,7 @@ async function main(): Promise<void> {
   const fixtures = buildFixtures();
 
   console.log(RULE);
-  console.log('REFUND CLAIM INTEGRITY ENGINE - SPINE DEMO (L1 -> L4)');
+  console.log('REFUND CLAIM INTEGRITY ENGINE - SPINE DEMO (deterministic layers only)');
   console.log(RULE);
   console.log(`MODE                 : ${mode}`);
   console.log(`policy               : ${config.policy.version} (${config.policy.merchant_id})`);
@@ -52,7 +52,14 @@ async function main(): Promise<void> {
   const payments = createPaymentsAdapter({ orders: fixtures.orders, payments: fixtures.payments });
   const store = createStoreAdapter({ claims: fixtures.claims, evidence: fixtures.evidence });
   const notifier = createNotifierAdapter();
-  const pipeline = createPipeline({ payments, store, notifier, config });
+  const pipeline = createPipeline({
+    payments,
+    store,
+    notifier,
+    config,
+    catalogue: fixtures.catalogue,
+    shared_index: fixtures.shared_index,
+  });
 
   const caseById = new Map<string, FixtureCase>(fixtures.cases.map((c) => [c.claim_id, c]));
   const claims = await store.listClaims();

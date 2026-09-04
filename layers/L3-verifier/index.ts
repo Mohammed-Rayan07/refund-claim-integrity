@@ -52,6 +52,8 @@ export type VerifierResult =
       prompt_version: string;
       latency_ms: number;
       attempts: number;
+      input_tokens: number;
+      output_tokens: number;
       /** True in MODE=mock: the model saw image references, not image bytes. */
       references_only: boolean;
     }
@@ -63,6 +65,8 @@ export type VerifierResult =
       prompt_version: string;
       latency_ms: number;
       attempts: number;
+      input_tokens: number;
+      output_tokens: number;
     };
 
 export interface VerifierDeps {
@@ -246,6 +250,8 @@ export async function runVerifier(
       prompt_version: PROMPT_VERSION,
       latency_ms: elapsed(),
       attempts: 0,
+      input_tokens: 0,
+      output_tokens: 0,
     };
   }
 
@@ -309,6 +315,8 @@ export async function runVerifier(
           prompt_version: PROMPT_VERSION,
           latency_ms: elapsed(),
           attempts,
+          input_tokens: response.input_tokens,
+          output_tokens: response.output_tokens,
         };
       }
 
@@ -322,6 +330,8 @@ export async function runVerifier(
           prompt_version: PROMPT_VERSION,
           latency_ms: elapsed(),
           attempts,
+          input_tokens: response.input_tokens,
+          output_tokens: response.output_tokens,
         };
       }
 
@@ -332,6 +342,8 @@ export async function runVerifier(
         prompt_version: PROMPT_VERSION,
         latency_ms: elapsed(),
         attempts,
+        input_tokens: response.input_tokens,
+        output_tokens: response.output_tokens,
         references_only,
       };
     } catch (err) {
@@ -357,5 +369,7 @@ export async function runVerifier(
     prompt_version: PROMPT_VERSION,
     latency_ms: elapsed(),
     attempts,
+    input_tokens: 0,
+    output_tokens: 0,
   };
 }

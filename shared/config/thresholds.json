@@ -1,5 +1,5 @@
 {
-  "version": "thresholds-v2",
+  "version": "thresholds-v3",
   "integrity_gate": {
     "refund_window_days": 30,
     "velocity_window_days": 30,
@@ -17,5 +17,12 @@
     "max_retries": 1,
     "circuit_breaker_consecutive_failures": 4,
     "circuit_breaker_cooldown_ms": 60000
+  },
+  "budget": {
+    "_note": "Placeholder token prices. Set from your actual model pricing before quoting cost figures.",
+    "input_inr_per_1k_tokens": 0.42,
+    "output_inr_per_1k_tokens": 2.1,
+    "max_cost_inr_per_claim": 1.5,
+    "max_latency_ms_per_claim": 30000
   }
 }

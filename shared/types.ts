@@ -127,4 +127,11 @@ export interface Thresholds {
     circuit_breaker_consecutive_failures: number;
     circuit_breaker_cooldown_ms: number;
   };
+  budget: {
+    _note: string;
+    input_inr_per_1k_tokens: number;
+    output_inr_per_1k_tokens: number;
+    max_cost_inr_per_claim: number;
+    max_latency_ms_per_claim: number;
+  };
 }
