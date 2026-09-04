@@ -12,6 +12,7 @@
  *  - `insufficient` is a first-class answer, not a fallback
  */
 import type { LlmAdapter, LlmImageRef } from '../../shared/adapters/llm.ts';
+import type { EvidenceAdapter } from '../../shared/adapters/evidence.ts';
 import { LlmTimeoutError, LlmTransportError } from '../../shared/adapters/llm.ts';
 import type { LoadedConfig } from '../../shared/config/index.ts';
 import type { AuditLogger } from '../../shared/lib/logger.ts';
@@ -42,6 +43,7 @@ export type VerifierFailureKind =
   | 'malformed_output'
   | 'schema_invalid'
   | 'circuit_open'
+  | 'evidence_unreadable'
   | 'no_evidence_submitted';
 
 export type VerifierResult =
@@ -73,6 +75,15 @@ export interface VerifierDeps {
   llm: LlmAdapter;
   config: LoadedConfig;
   audit: AuditLogger;
+  /**
+   * Resolves an image_ref to actual bytes. Absent in MODE=mock, where evidence
+   * is a placeholder reference and there is nothing to load; when it is absent
+   * the result reports `references_only: true` so no caller can mistake a
+   * reference-only run for one where the model saw a photograph.
+   */
+  evidence_bytes?: EvidenceAdapter;
+  /** Files API ids for evidence too large to inline, keyed by image_ref. */
+  uploaded?: Map<string, string>;
 }
 
 export interface VerifierInput {
@@ -132,6 +143,38 @@ Return ONLY this JSON:
   "reasoning": "..."
 }`;
 }
+
+/**
+ * The §7 response contract as JSON Schema, sent to the live adapter as
+ * `output_config.format` so the model is constrained at decode time.
+ *
+ * This does NOT replace `validateVerdict` below - that still runs on every
+ * response, live or mock. Constraining the decode narrows how often a formatting
+ * slip becomes a REVIEW, so the REVIEW column measures judgement rather than
+ * punctuation; the strict check is what actually enforces the contract.
+ */
+export const VERDICT_JSON_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    supports_claim: { type: 'string', enum: ['yes', 'no', 'insufficient'] },
+    sku_match: { type: 'string', enum: ['yes', 'no', 'unclear'] },
+    internal_consistency: { type: 'number', minimum: 0, maximum: 1 },
+    contradictions: { type: 'array', items: { type: 'string' } },
+    confidence: { type: 'number', minimum: 0, maximum: 1 },
+    injection_suspected: { type: 'boolean' },
+    reasoning: { type: 'string' },
+  },
+  required: [
+    'supports_claim',
+    'sku_match',
+    'internal_consistency',
+    'contradictions',
+    'confidence',
+    'injection_suspected',
+    'reasoning',
+  ],
+  additionalProperties: false,
+};
 
 // --------------------------------------------------------------------------
 // Strict schema validation - anything that does not match is a failure (F11)
@@ -236,7 +279,7 @@ export async function runVerifier(
   input: VerifierInput,
   deps: VerifierDeps,
 ): Promise<VerifierResult> {
-  const { llm, config, audit } = deps;
+  const { llm, config, audit, evidence_bytes, uploaded } = deps;
   const cfg = config.thresholds.verifier;
   const startedAt = performance.now();
   const elapsed = (): number => Math.round(performance.now() - startedAt);
@@ -257,14 +300,41 @@ export async function runVerifier(
 
   const prompt = buildPrompt(input);
 
-  // TODO(LIVE): load the evidence bytes for each ref and set data_base64.
-  // Requires .env: DATABASE_URL (evidence blobs are addressed by image_ref).
-  const images: LlmImageRef[] = input.evidence.map((e) => ({
-    image_ref: e.image_ref,
-    media_type: 'image/jpeg',
-    data_base64: null,
-  }));
-  const references_only = images.every((i) => i.data_base64 === null);
+  // Evidence bytes, when an evidence adapter is wired. A failure to load is a
+  // verifier failure, not a silent downgrade to a reference-only request: a
+  // request the model cannot see must never be scored as if it could.
+  let images: LlmImageRef[];
+  try {
+    images = input.evidence.map((e) => {
+      if (!evidence_bytes) {
+        return { image_ref: e.image_ref, media_type: 'image/jpeg', data_base64: null };
+      }
+      const file_id = uploaded?.get(e.image_ref) ?? null;
+      if (file_id) {
+        // Uploaded through the Files API; the service already knows its type.
+        return { image_ref: e.image_ref, media_type: 'image/jpeg', data_base64: null, file_id };
+      }
+      const loaded = evidence_bytes.load(e.image_ref);
+      return {
+        image_ref: loaded.image_ref,
+        media_type: loaded.media_type,
+        data_base64: loaded.data_base64,
+      };
+    });
+  } catch (err) {
+    return {
+      ok: false,
+      failure: 'evidence_unreadable',
+      message: err instanceof Error ? err.message : String(err),
+      model_version: null,
+      prompt_version: PROMPT_VERSION,
+      latency_ms: elapsed(),
+      attempts: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+    };
+  }
+  const references_only = images.every((i) => i.data_base64 === null && !i.file_id);
 
   audit.record(
     input.claim.id,
@@ -276,6 +346,11 @@ export async function runVerifier(
       image_count: images.length,
       // Be explicit: in mock the model was given references, not image bytes.
       evidence_mode: references_only ? 'references_only' : 'image_bytes',
+      evidence_bytes_total: images.reduce(
+        (sum, i) => sum + (i.data_base64 ? Math.floor((i.data_base64.length * 3) / 4) : 0),
+        0,
+      ),
+      evidence_via_files_api: images.filter((i) => i.file_id).map((i) => i.image_ref),
       claim_text_fenced: true,
       claim_text_escaped: input.sanitised.escaped,
     },
@@ -301,6 +376,7 @@ export async function runVerifier(
           images,
           max_tokens: MAX_TOKENS,
           timeout_ms: cfg.timeout_ms,
+          output_schema: VERDICT_JSON_SCHEMA,
         }),
         cfg.timeout_ms,
       );

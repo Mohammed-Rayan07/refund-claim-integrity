@@ -58,6 +58,8 @@ export interface DecisionResult {
   injection_suspected: boolean;
   required_confidence: number;
   policy_rules_fired: string[];
+  /** True if a REVIEW arrived with no reason code and the invariant repaired it. */
+  silent_review_repaired: boolean;
 }
 
 /**
@@ -119,9 +121,10 @@ export function decide(input: DecisionInput, deps: DecisionDeps): DecisionResult
     const detail = verifier === null ? '' : `: ${verifier.message}`;
     summary = `verifier ${why}${detail} - failed safe to REVIEW`;
   } else if (injection_suspected) {
-    // 4. Injection suspected -> REVIEW + audit flag (§7 specifies no reason code)
+    // 4. Injection suspected -> REVIEW + RCI-13 + audit flag.
+    //    §7 names no code here; RCI-13 is operator-added so the flag is never silent.
     outcome = 'REVIEW';
-    reason_codes = [];
+    reason_codes = ['RCI-13'];
     decision_basis = 'injection_suspected';
     policy_rules_fired.push('PR-02');
     const ids = sanitised.signals.map((s) => s.id).join(', ') || 'model-flagged';
@@ -141,15 +144,15 @@ export function decide(input: DecisionInput, deps: DecisionDeps): DecisionResult
     decision_basis = 'verifier_abstained';
     summary = `verifier abstained: ${verdict.reasoning.slice(0, 90)}`;
   } else if ((verdict?.confidence ?? 0) < required_confidence) {
-    // 7. Confidence below the exposure-scaled bar -> REVIEW (§7 specifies no code)
+    // 7. Confidence below the exposure-scaled bar -> REVIEW + RCI-14 (operator-added).
     outcome = 'REVIEW';
-    reason_codes = [];
+    reason_codes = ['RCI-14'];
     decision_basis = 'confidence_below_threshold';
     summary = `confidence ${verdict?.confidence.toFixed(2)} below ${required_confidence.toFixed(2)} required at INR ${exposure_inr} exposure`;
   } else if (exposure_inr > ceiling) {
-    // 8. Above the merchant's ceiling -> REVIEW regardless of confidence (F14)
+    // 8. Above the merchant's ceiling -> REVIEW + RCI-15, regardless of confidence (F14).
     outcome = 'REVIEW';
-    reason_codes = [];
+    reason_codes = ['RCI-15'];
     decision_basis = 'exposure_above_ceiling';
     policy_rules_fired.push('PR-01');
     summary = `exposure INR ${exposure_inr} above ${category ?? 'merchant'} ceiling INR ${ceiling} - policy requires a human`;
@@ -159,6 +162,17 @@ export function decide(input: DecisionInput, deps: DecisionDeps): DecisionResult
     reason_codes = [];
     decision_basis = 'clean_and_supported';
     summary = `evidence supports claim at confidence ${verdict?.confidence.toFixed(2)} (bar ${required_confidence.toFixed(2)}), INR ${exposure_inr} within ceiling INR ${ceiling}`;
+  }
+
+  // INVARIANT (operator rule): every REVIEW carries at least one reason code.
+  // A reviewer must never open a queued claim and find an empty codes array.
+  // This is repaired defensively rather than thrown: `decide` runs outside the
+  // pipeline's try/catch, so a throw here would escape the F11 fail-safe and
+  // take the claim down with it. The eval runner asserts hard on `silent_review`.
+  let silent_review = false;
+  if (outcome === 'REVIEW' && reason_codes.length === 0) {
+    silent_review = true;
+    reason_codes = ['RCI-11'];
   }
 
   const decision: Decision = {
@@ -204,6 +218,9 @@ export function decide(input: DecisionInput, deps: DecisionDeps): DecisionResult
       prompt_version: decision.prompt_version,
       policy_rules_fired,
       config_snapshot_id: config.snapshot_id,
+      // True only if the ladder produced a REVIEW with no code and the invariant
+      // above had to repair it. Should always be false; audited so it cannot hide.
+      silent_review_repaired: silent_review,
       money_moved: false,
     },
   );
@@ -215,5 +232,6 @@ export function decide(input: DecisionInput, deps: DecisionDeps): DecisionResult
     injection_suspected,
     required_confidence,
     policy_rules_fired,
+    silent_review_repaired: silent_review,
   };
 }

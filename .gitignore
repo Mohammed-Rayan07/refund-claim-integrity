@@ -1,3 +1,6 @@
 node_modules/
 .env
 *.log
+eval/fraudbench/data/
+eval/fraudbench/manifest.json
+eval/live-run.json

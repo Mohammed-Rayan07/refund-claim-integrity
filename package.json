@@ -4,15 +4,23 @@
   "private": true,
   "description": "Refund Claim Integrity Engine (RCIE) — defense-only refund claim verification. Razorpay AI Buildathon, Track 02.",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "demo:spine": "node scripts/demo-spine.ts",
-    "demo:decide": "node scripts/demo-decide.ts",
-    "eval": "node eval/report.ts",
-    "typecheck": "tsc --noEmit"
+    "demo:spine": "node --env-file-if-exists=.env scripts/demo-spine.ts",
+    "demo:decide": "node --env-file-if-exists=.env scripts/demo-decide.ts",
+    "eval": "node --env-file-if-exists=.env eval/report.ts",
+    "typecheck": "tsc --noEmit",
+    "fetch:fraudbench": "node --env-file-if-exists=.env eval/fraudbench/fetch.ts",
+    "eval:live": "node --env-file-if-exists=.env eval/live_batch.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.123.0",
+    "jpeg-js": "^0.4.4"
   }
 }

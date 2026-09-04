@@ -8,7 +8,8 @@
  * exercised offline. It contains no image handling of any kind: it neither reads,
  * produces nor alters evidence (SPEC §0).
  */
-import { isMock } from '../mode.ts';
+import Anthropic from '@anthropic-ai/sdk';
+import { llmMode } from '../mode.ts';
 
 export class LlmTimeoutError extends Error {
   readonly code = 'timeout' as const;
@@ -27,6 +28,11 @@ export interface LlmImageRef {
    * available (MODE=mock). Never populated by this adapter.
    */
   data_base64: string | null;
+  /**
+   * Files API id, for evidence too large to inline. Set by the caller after an
+   * upload; the adapter only references it. Takes precedence over data_base64.
+   */
+  file_id?: string | null;
 }
 
 export interface LlmRequest {
@@ -38,6 +44,14 @@ export interface LlmRequest {
   images: LlmImageRef[];
   max_tokens: number;
   timeout_ms: number;
+  /**
+   * JSON Schema the response must conform to. The caller owns the schema; the
+   * adapter only forwards it. Live requests pass it as `output_config.format`
+   * so the model is constrained at decode time rather than asked politely.
+   * The caller still validates the parsed result - this narrows the failure
+   * surface, it does not replace the strict check in L3.
+   */
+  output_schema?: Record<string, unknown>;
 }
 
 export interface LlmResponse {
@@ -46,6 +60,8 @@ export interface LlmResponse {
   input_tokens: number;
   output_tokens: number;
   latency_ms: number;
+  /** How the response was terminated, when the transport reports it. */
+  stop_reason?: string | null;
 }
 
 export interface LlmAdapter {
@@ -148,17 +164,133 @@ export function createMockLlmAdapter(options: MockLlmOptions): MockLlmAdapter {
   return new MockLlm(options);
 }
 
+// --------------------------------------------------------------------------
+// Live - Anthropic Messages API (multimodal)
+// --------------------------------------------------------------------------
+
+export interface LiveLlmOptions {
+  /** Model id, e.g. `claude-opus-5`. */
+  model: string;
+  /** Reasoning effort passed through as `output_config.effort`. */
+  effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+}
+
+class LiveLlm implements LlmAdapter {
+  readonly kind = 'live' as const;
+  readonly model_version: string;
+  #client: Anthropic;
+  #effort: LiveLlmOptions['effort'];
+  #calls = 0;
+
+  constructor(options: LiveLlmOptions) {
+    // Requires .env: ANTHROPIC_API_KEY (resolved by the SDK from the environment)
+    this.#client = new Anthropic({ maxRetries: 0 });
+    this.model_version = options.model;
+    this.#effort = options.effort;
+  }
+
+  get call_count(): number {
+    return this.#calls;
+  }
+
+  async complete(request: LlmRequest): Promise<LlmResponse> {
+    this.#calls += 1;
+    const startedAt = performance.now();
+
+    // Images first, then the instruction text: the model reads the evidence in
+    // the order a reviewer would, and the text block is the one that carries
+    // the fenced, untrusted claim data.
+    const content: Anthropic.ContentBlockParam[] = [];
+    for (const image of request.images) {
+      if (image.file_id) {
+        content.push({ type: 'image', source: { type: 'file', file_id: image.file_id } });
+        continue;
+      }
+      if (image.data_base64 === null) {
+        // A live call with a bare reference would silently assess nothing.
+        throw new LlmTransportError(
+          `evidence ${image.image_ref} has no bytes - refusing to send a live ` +
+            'request the model cannot see',
+        );
+      }
+      content.push({
+        type: 'image',
+        source: {
+          type: 'base64',
+          media_type: image.media_type as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+          data: image.data_base64,
+        },
+      });
+    }
+    content.push({ type: 'text', text: request.user_text });
+
+    const output_config: Record<string, unknown> = { effort: this.#effort };
+    if (request.output_schema) {
+      output_config['format'] = { type: 'json_schema', schema: request.output_schema };
+    }
+
+    let response: Anthropic.Message;
+    try {
+      response = await this.#client.messages.create(
+        {
+          model: this.model_version,
+          max_tokens: request.max_tokens,
+          system: request.system,
+          messages: [{ role: 'user', content }],
+          output_config,
+        } as Anthropic.MessageCreateParamsNonStreaming,
+        { timeout: request.timeout_ms },
+      );
+    } catch (err) {
+      if (err instanceof Anthropic.APIConnectionTimeoutError) {
+        throw new LlmTimeoutError(`live: no response within ${request.timeout_ms}ms`);
+      }
+      if (err instanceof Anthropic.APIError) {
+        throw new LlmTransportError(`live: ${err.status ?? 'network'} ${err.message}`);
+      }
+      throw new LlmTransportError(err instanceof Error ? err.message : String(err));
+    }
+
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+
+    return {
+      text,
+      model_version: response.model,
+      input_tokens: response.usage.input_tokens,
+      output_tokens: response.usage.output_tokens,
+      latency_ms: Math.round(performance.now() - startedAt),
+      stop_reason: response.stop_reason,
+    };
+  }
+}
+
+/**
+ * The live verifier adapter. Gated on LLM_MODE=live rather than the global MODE,
+ * so a live verifier run cannot pull payments, store or notifier live with it.
+ */
+export function createLiveLlmAdapter(options: LiveLlmOptions): LlmAdapter {
+  if (llmMode() !== 'live') {
+    throw new Error('createLiveLlmAdapter requires LLM_MODE=live.');
+  }
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new Error('LLM_MODE=live requires ANTHROPIC_API_KEY in the environment (.env).');
+  }
+  return new LiveLlm(options);
+}
+
 export function createLlmAdapter(options?: MockLlmOptions): LlmAdapter {
-  if (isMock()) {
+  if (llmMode() === 'mock') {
     if (!options) {
-      throw new Error('MODE=mock requires a scripted MockLlmOptions for the llm adapter.');
+      throw new Error('LLM_MODE=mock requires a scripted MockLlmOptions for the llm adapter.');
     }
     return new MockLlm(options);
   }
 
-  // TODO(LIVE): implement against the Anthropic Messages API (multimodal).
-  // Requires .env: ANTHROPIC_API_KEY, ANTHROPIC_MODEL
-  // Send `system` as the system prompt and `user_text` + `images` as one user
-  // turn; images must be attached as base64 blocks loaded by the caller.
-  throw new Error('TODO(LIVE): live llm adapter not implemented. Set MODE=mock.');
+  return createLiveLlmAdapter({
+    model: process.env.ANTHROPIC_MODEL ?? 'claude-opus-5',
+    effort: (process.env.ANTHROPIC_EFFORT as LiveLlmOptions['effort']) ?? 'medium',
+  });
 }

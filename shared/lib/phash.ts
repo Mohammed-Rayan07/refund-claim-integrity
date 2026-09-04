@@ -16,12 +16,8 @@ const HASH_W = 9;
 const HASH_H = 8;
 export const HASH_BITS = (HASH_W - 1) * HASH_H;
 
-export interface GrayscaleImage {
-  width: number;
-  height: number;
-  /** Row-major luminance values, 0-255, length = width * height. */
-  pixels: Uint8Array;
-}
+export type { GrayscaleImage } from './imagedecode.ts';
+import type { GrayscaleImage } from './imagedecode.ts';
 
 /** Nearest-neighbour downsample. Cheap and sufficient at 9x8. */
 function downsample(image: GrayscaleImage): number[][] {

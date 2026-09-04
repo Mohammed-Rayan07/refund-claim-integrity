@@ -11,6 +11,7 @@ import type { PaymentsAdapter } from '../shared/adapters/payments.ts';
 import type { StoreAdapter } from '../shared/adapters/store.ts';
 import type { NotifierAdapter } from '../shared/adapters/notifier.ts';
 import type { LlmAdapter } from '../shared/adapters/llm.ts';
+import type { EvidenceAdapter } from '../shared/adapters/evidence.ts';
 import { AuditLogger } from '../shared/lib/logger.ts';
 import { sanitiseClaimText, type SanitisedClaimText } from '../shared/lib/sanitiser.ts';
 import { CircuitBreaker, type BreakerSnapshot } from '../shared/lib/circuit.ts';
@@ -38,6 +39,8 @@ export interface PipelineResult {
   decision_basis: string;
   injection_suspected: boolean;
   required_confidence: number;
+  /** True if L4 emitted a REVIEW with no reason code and the invariant repaired it. */
+  silent_review_repaired: boolean;
   /** True when the claim was settled without spending a model call (F17). */
   resolved_without_model_call: boolean;
   spend: ModelSpend;
@@ -61,6 +64,13 @@ export interface PipelineDeps {
   catalogue?: CatalogueImage[];
   /** Cross-merchant hash-only index for L2. */
   shared_index?: SharedIndexEntry[];
+  /**
+   * Resolves image_refs to real bytes for L3 and to real perceptual hashes for
+   * L2. Absent in MODE=mock, where evidence is a placeholder reference.
+   */
+  evidence_bytes?: EvidenceAdapter;
+  /** Files API ids for evidence too large to inline, keyed by image_ref. */
+  uploaded?: Map<string, string>;
 }
 
 export function createPipeline(deps: PipelineDeps): Pipeline {
@@ -114,6 +124,7 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
       summary,
       decision_basis: 'unhandled_error',
       injection_suspected: false,
+      silent_review_repaired: false,
       required_confidence: Number.NaN,
       resolved_without_model_call: true,
       spend: NO_SPEND,
@@ -219,7 +230,13 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
               evidence,
               sanitised,
             },
-            { llm: deps.llm!, config: deps.config, audit },
+            {
+              llm: deps.llm!,
+              config: deps.config,
+              audit,
+              evidence_bytes: deps.evidence_bytes,
+              uploaded: deps.uploaded,
+            },
           );
           modelCallMade = verifier.attempts > 0;
           spend = {
@@ -332,6 +349,7 @@ export function createPipeline(deps: PipelineDeps): Pipeline {
         decision_basis: outcome.decision_basis,
         injection_suspected: outcome.injection_suspected,
         required_confidence: outcome.required_confidence,
+        silent_review_repaired: outcome.silent_review_repaired,
         resolved_without_model_call: !modelCallMade,
         spend,
         over_budget: budget.over_cost_budget || budget.over_latency_budget,
