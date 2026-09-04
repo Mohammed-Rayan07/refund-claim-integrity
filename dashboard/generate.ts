@@ -28,6 +28,7 @@ import { AuditLogger } from '../shared/lib/logger.ts';
 import { createPipeline, type PipelineResult } from '../layers/pipeline.ts';
 import { buildFixtures, UNSCRIPTED_FALLBACK, type FixtureCase } from '../eval/fixtures/index.ts';
 import { loadFraudBenchSubset } from '../eval/fraudbench/loader.ts';
+import { loadLiveRun, computeLiveMetrics } from '../eval/live_report.ts';
 import type { Decision, Outcome } from '../shared/types.ts';
 
 const MODEL_VERSION = 'claude-opus-5-mock';
@@ -150,6 +151,55 @@ async function main(): Promise<void> {
     operator_added: OPERATOR_ADDED_CODES.includes(code as ReasonCode),
   }));
 
+  // ---- live run (LLM_MODE=live), only if eval/live-run.json exists ------------
+  const liveRun = loadLiveRun();
+  const live = liveRun
+    ? (() => {
+        const b = computeLiveMetrics(liveRun);
+        return {
+          present: true,
+          model: liveRun.model,
+          effort: liveRun.effort,
+          dataset_sha: liveRun.dataset_sha,
+          fetched_at: liveRun.fetched_at,
+          generated_at: liveRun.generated_at,
+          claims: liveRun.records.length,
+          metrics: b.metrics,
+          confidence: b.confidence,
+          holdout: b.holdout,
+          injection: b.injection,
+          total_cost_inr: b.totalCostInr,
+          total_input_tokens: b.totalInputTokens,
+          total_output_tokens: b.totalOutputTokens,
+          mean_latency_ms: b.meanLatencyMs,
+          p95_latency_ms: b.p95LatencyMs,
+          bytes_verified: b.bytesVerified,
+          excluded: liveRun.excluded,
+          excluded_claims: liveRun.excluded_claims,
+          records: liveRun.records.map((r) => ({
+            id: r.claim_id,
+            scenario: r.scenario,
+            ground_truth: r.ground_truth,
+            product_title: r.product_title,
+            amount_inr: r.amount_inr,
+            outcome: r.outcome,
+            reason_codes: r.reason_codes,
+            confidence: r.confidence,
+            decision_basis: r.decision_basis,
+            summary: r.summary,
+            supports_claim: r.supports_claim,
+            sku_match: r.sku_match,
+            contradictions: r.contradictions,
+            verifier_reasoning: r.verifier_reasoning,
+            b2: r.b2,
+            provenance: r.provenance,
+            saw_image_bytes: r.saw_image_bytes,
+            model_call: r.model_call,
+          })),
+        };
+      })()
+    : { present: false as const };
+
   const payload = {
     generated_at: new Date().toISOString(),
     mode: currentMode(),
@@ -157,6 +207,7 @@ async function main(): Promise<void> {
     policy: { version: config.policy.version, merchant_id: config.policy.merchant_id },
     thresholds_version: config.thresholds.version,
     fraudbench_note: fraudbench.note,
+    live,
     portfolio: {
       claims: results.length,
       inr_held: held,
@@ -251,6 +302,10 @@ function renderHtml(payload: unknown): string {
   .bar-track { background:var(--panel-2); border-radius:4px; height:10px; overflow:hidden; }
   .bar-fill { background:var(--accent); height:100%; }
   footer { padding:20px 24px 40px; color:var(--muted); font-size:11.5px; }
+  .live-section { border-left:3px solid var(--accent); }
+  .live-badge { display:inline-block; background:var(--accent); color:#fff; font-size:10.5px; font-weight:700; letter-spacing:.04em; padding:1px 7px; border-radius:999px; margin-right:8px; vertical-align:middle; }
+  .live-empty { color:var(--muted); font-size:12.5px; }
+  .live-empty code { background:var(--panel-2); padding:1px 5px; border-radius:4px; }
 </style>
 </head>
 <body>
@@ -262,8 +317,13 @@ function renderHtml(payload: unknown): string {
 <main>
   <div class="grid" id="portfolio"></div>
 
+  <section class="live-section">
+    <h2><span class="live-badge">LIVE</span>Live verifier run (LLM_MODE=live, real FraudBench images)</h2>
+    <div id="live-body"></div>
+  </section>
+
   <section>
-    <h2>Claims</h2>
+    <h2>Claims (MODE=mock, scripted routing batch)</h2>
     <div class="toolbar" id="toolbar">
       <input type="text" id="search" placeholder="search claim id, order id, sku, scenario..." />
     </div>
@@ -449,6 +509,46 @@ function renderHtml(payload: unknown): string {
   document.getElementById('legend').innerHTML = DATA.reason_codes.map(function (rc) {
     return '<div' + (rc.operator_added ? ' class="op"' : '') + '>' + rc.code + ' — ' + rc.name + '</div>';
   }).join('');
+
+  // live run
+  const liveBody = document.getElementById('live-body');
+  if (!DATA.live.present) {
+    liveBody.innerHTML =
+      '<p class="live-empty">No live run present. Run <code>npm run fetch:fraudbench</code> then ' +
+      '<code>LLM_MODE=live npm run eval:live</code>, then regenerate this dashboard.</p>';
+  } else {
+    const lv = DATA.live;
+    const m = lv.metrics;
+    const liveStats = [
+      { label: 'Live claims', value: lv.claims },
+      { label: 'Model', value: lv.model + ' (' + lv.effort + ')' },
+      { label: 'Real bytes sent', value: lv.bytes_verified + '/' + lv.records.filter(function (r) { return r.model_call; }).length },
+      { label: 'Ours precision / recall', value: m['Ours (live)'].precision.toFixed(2) + ' / ' + m['Ours (live)'].recall.toFixed(2) },
+      { label: 'Ours false-positive rate', value: (m['Ours (live)'].fpr * 100).toFixed(1) + '%' },
+      { label: 'Live spend', value: 'INR ' + lv.total_cost_inr.toFixed(3), sub: lv.total_input_tokens + '/' + lv.total_output_tokens + ' tok in/out' },
+    ];
+    let html = '<div class="grid" style="margin-bottom:14px;">' + liveStats.map(function (s) {
+      return '<div class="stat"><div class="label">' + s.label + '</div><div class="value" style="font-size:17px;">' + s.value + '</div>' +
+        (s.sub ? '<div class="sub">' + s.sub + '</div>' : '') + '</div>';
+    }).join('') + '</div>';
+
+    html += '<p class="small muted">Dataset sha ' + (lv.dataset_sha ? lv.dataset_sha.slice(0, 12) : 'unknown') +
+      ' · fetched ' + lv.fetched_at + ' · run generated ' + lv.generated_at + '. B1/B2/Ours are all computed from real model output on real images — see eval/RESULTS.md for the full breakdown, F10 holdout and confidence histogram.</p>';
+
+    html += '<div style="overflow-x:auto;"><table><thead><tr><th>Claim</th><th>Scenario</th><th>Ground truth</th>' +
+      '<th>Outcome</th><th>Conf</th><th>B2 (real)</th><th>Summary</th></tr></thead><tbody>';
+    lv.records.forEach(function (r) {
+      html += '<tr><td>' + r.id + '<div class="muted small">' + escHtml(r.product_title) + '</div></td>' +
+        '<td>' + escHtml(r.scenario) + '</td>' +
+        '<td>' + escHtml(r.ground_truth) + '</td>' +
+        '<td><span class="outcome ' + r.outcome + '">' + r.outcome + '</span></td>' +
+        '<td>' + (r.confidence === null ? '-' : r.confidence.toFixed(2)) + '</td>' +
+        '<td>' + (r.b2 ? escHtml(r.b2.assessment) + ' (' + (r.b2.confidence === null ? '-' : r.b2.confidence.toFixed(2)) + ')' : '-') + '</td>' +
+        '<td class="muted small">' + escHtml(r.summary).slice(0, 90) + '</td></tr>';
+    });
+    html += '</tbody></table></div>';
+    liveBody.innerHTML = html;
+  }
 })();
 </script>
 </body>

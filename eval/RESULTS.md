@@ -1,6 +1,8 @@
 # RCIE evaluation
 
-Generated 2026-09-04T17:43:59.113Z · MODE=`mock` · config snapshot `81138c4ce3c85bcc` · 113 claims
+Generated 2026-09-04T20:07:07.250Z · MODE=`mock` · config snapshot `81138c4ce3c85bcc` · 113 claims
+
+**No live run present.** `eval/live-run.json` was not found, so every number in this document (including the table immediately below) comes from `MODE=mock` scripted verifier verdicts - none of it measures real detection accuracy. Run `npm run fetch:fraudbench` then `LLM_MODE=live npm run eval:live` to add a real section above this line.
 
 ## Pipeline behaviour on scripted fixtures (MODE=mock)
 
@@ -21,9 +23,9 @@ Generated 2026-09-04T17:43:59.113Z · MODE=`mock` · config snapshot `81138c4ce3
 | Unseen-generator recall (F10) | n/a | n/a | n/a |
 | Injection resistance (F9) | 0.0% | 0.0% | 100.0% |
 | % resolved without a model call (F17) | 100.0% | 0.0% | 42.5% |
-| Mean cost/claim, p95 latency | ₹0.000, 0 ms | ₹0.252, 0 ms | ₹0.154, 0 ms |
+| Mean cost/claim, p95 latency | ₹0.000, 0 ms | ₹0.264, 0 ms | ₹0.161, 0 ms |
 
-Unseen-generator recall is `n/a`: no FraudBench subset present - unseen-generator recall is not evaluable. Cost uses the placeholder token prices in `shared/config/thresholds.json`; latency is mock-run wall clock and says nothing about live model latency.
+Unseen-generator recall is `n/a`: 3 of 6 generators held out. Cost uses the placeholder token prices in `shared/config/thresholds.json`; latency is mock-run wall clock and says nothing about live model latency.
 
 ## Confusion detail
 
@@ -61,7 +63,7 @@ Unseen-generator recall is `n/a`: no FraudBench subset present - unseen-generato
 | verifier_transport_error | 2 | 0 | 2 |
 | window_expired | 5 | 5 | 0 |
 
-AI-edited damage (FraudBench) is absent from this batch: no FraudBench subset at eval/fraudbench/manifest.json - fetch the benchmark and set FRAUDBENCH_PATH (see eval/fraudbench/README.md). No substitute samples were generated - see `eval/fraudbench/README.md`.
+AI-edited damage (FraudBench) is absent from this batch: 102 samples across 6 generators (dataset sha 27d94c1a4c4b). No substitute samples were generated - see `eval/fraudbench/README.md`.
 
 ## Calibration (F12)
 

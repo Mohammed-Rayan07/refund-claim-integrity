@@ -24,6 +24,7 @@ import { SYSTEMS, type Projection, type SystemName } from './baselines.ts';
 import { buildHoldout } from './holdout.ts';
 import { calibrate } from './calibration.ts';
 import { scoreInjection } from './injection_suite.ts';
+import { loadLiveRun, computeLiveMetrics, renderLiveMarkdown } from './live_report.ts';
 
 const MODEL_VERSION = 'claude-opus-5-mock';
 
@@ -189,6 +190,25 @@ async function main(): Promise<void> {
       `${results.length} claims`,
   );
   L.push('');
+
+  // ---- live section, only if a live run exists; never fabricated ----
+  const liveRun = loadLiveRun();
+  if (liveRun) {
+    const bundle = computeLiveMetrics(liveRun);
+    L.push(...renderLiveMarkdown(bundle));
+    L.push('---');
+    L.push('');
+  } else {
+    L.push(
+      '**No live run present.** `eval/live-run.json` was not found, so every number in this ' +
+        'document (including the table immediately below) comes from `MODE=mock` scripted ' +
+        'verifier verdicts - none of it measures real detection accuracy. Run ' +
+        '`npm run fetch:fraudbench` then `LLM_MODE=live npm run eval:live` to add a real section ' +
+        'above this line.',
+    );
+    L.push('');
+  }
+
   L.push('## Pipeline behaviour on scripted fixtures (MODE=mock)');
   L.push('');
   L.push(
