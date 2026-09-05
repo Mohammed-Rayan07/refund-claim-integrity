@@ -15,7 +15,8 @@
     "dashboard": "node --env-file-if-exists=.env dashboard/generate.ts",
     "typecheck": "tsc --noEmit",
     "fetch:fraudbench": "node --env-file-if-exists=.env eval/fraudbench/fetch.ts",
-    "eval:live": "node --env-file-if-exists=.env eval/live_batch.ts"
+    "eval:live": "node --env-file-if-exists=.env eval/live_batch.ts",
+    "demo:server": "node --env-file-if-exists=.env server.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",

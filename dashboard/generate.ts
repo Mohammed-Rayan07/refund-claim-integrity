@@ -306,6 +306,19 @@ function renderHtml(payload: unknown): string {
   .live-badge { display:inline-block; background:var(--accent); color:#fff; font-size:10.5px; font-weight:700; letter-spacing:.04em; padding:1px 7px; border-radius:999px; margin-right:8px; vertical-align:middle; }
   .live-empty { color:var(--muted); font-size:12.5px; }
   .live-empty code { background:var(--panel-2); padding:1px 5px; border-radius:4px; }
+  .run-controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:12px; }
+  .run-controls button { background:var(--accent); color:#08131f; border:none; padding:8px 14px; border-radius:6px; cursor:pointer; font-size:12.5px; font-weight:600; }
+  .run-controls button.secondary { background:var(--panel-2); color:var(--text); border:1px solid var(--border); }
+  .run-controls button:disabled { opacity:.5; cursor:default; }
+  .run-status { color:var(--muted); font-size:12.5px; }
+  .log-panel { background:#05080c; color:#8fd48f; font-family:ui-monospace,Consolas,monospace; font-size:11.5px; line-height:1.5; padding:12px; border-radius:8px; height:220px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; border:1px solid var(--border); }
+  .live-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr)); gap:10px; margin-top:14px; }
+  .live-card { background:var(--panel-2); border:1px solid var(--border); border-radius:8px; padding:10px 12px; font-size:12px; }
+  .live-card.mismatch { border-color:var(--deny); box-shadow:0 0 0 1px var(--deny); }
+  .live-card .top { display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; gap:8px; }
+  .live-card .scn { color:var(--muted); font-size:11px; margin-bottom:6px; }
+  .live-card .summ { color:var(--muted); font-size:11px; margin-top:6px; }
+  .live-card .wrong-badge { display:inline-block; background:var(--deny); color:#fff; font-size:10px; font-weight:700; padding:1px 6px; border-radius:999px; margin-left:6px; }
 </style>
 </head>
 <body>
@@ -316,6 +329,19 @@ function renderHtml(payload: unknown): string {
 </header>
 <main>
   <div class="grid" id="portfolio"></div>
+
+  <section>
+    <h2>Run pipeline (live, right now)</h2>
+    <p class="muted small">Runs the real, unmodified pipeline against real FraudBench images with a live L3 verifier (LLM_MODE=live) - payments/store/notifier stay mock. Requires <code>npm run demo:server</code> to be running and the configured provider's API key set in <code>.env</code> (<code>GEMINI_API_KEY</code> by default; <code>ANTHROPIC_API_KEY</code> if <code>LLM_PROVIDER=anthropic</code>). This calls a real LLM API and spends real tokens.</p>
+    <div class="run-controls">
+      <button id="run-sample">Run sample (1 claim per case)</button>
+      <button id="run-full" class="secondary">Run full batch</button>
+      <span class="run-status" id="run-status"></span>
+    </div>
+    <div class="log-panel" id="run-log"></div>
+    <div class="live-cards" id="run-cards"></div>
+    <div class="grid" id="run-portfolio" style="margin-top:14px;"></div>
+  </section>
 
   <section class="live-section">
     <h2><span class="live-badge">LIVE</span>Live verifier run (LLM_MODE=live, real FraudBench images)</h2>
@@ -549,6 +575,196 @@ function renderHtml(payload: unknown): string {
     html += '</tbody></table></div>';
     liveBody.innerHTML = html;
   }
+})();
+
+// ---------------------------------------------------------------------------
+// "Run pipeline" - POST /api/run (server.ts) and stream the response as SSE.
+// Independent of the DATA blob above: this talks to a running demo server,
+// not the static payload baked into this file at generate time.
+// ---------------------------------------------------------------------------
+(function () {
+  const logEl = document.getElementById('run-log');
+  const cardsEl = document.getElementById('run-cards');
+  const portfolioEl = document.getElementById('run-portfolio');
+  const statusEl = document.getElementById('run-status');
+  const sampleBtn = document.getElementById('run-sample');
+  const fullBtn = document.getElementById('run-full');
+  if (!logEl || !cardsEl || !portfolioEl || !statusEl || !sampleBtn || !fullBtn) return;
+
+  function escHtml(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  function log(line) {
+    const stamp = new Date().toLocaleTimeString();
+    logEl.textContent += '[' + stamp + '] ' + line + '\\n';
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function fmtAudit(e) {
+    const d = e.detail || {};
+    const id = e.claim_id;
+    if (e.event === 'verifier_prompt_built') {
+      return id + '  [L3] calling the verifier LLM... (' + (d.image_count || 0) + ' image(s), ' + (d.evidence_mode || '?') + ')';
+    }
+    if (e.event === 'verifier_verdict') {
+      return id + '  [L3] verdict: supports_claim=' + d.supports_claim + ' sku_match=' + d.sku_match +
+        ' confidence=' + (typeof d.confidence === 'number' ? d.confidence.toFixed(2) : '-') +
+        (d.injection_suspected ? '  [INJECTION SUSPECTED]' : '');
+    }
+    if (e.event === 'verifier_failed') {
+      return id + '  [L3] verifier FAILED: ' + d.failure + ' - ' + String(d.message || '').slice(0, 100);
+    }
+    if (e.event === 'integrity_gate_passed' || e.event === 'integrity_gate_failed') {
+      return id + '  [L1] ' + e.event + (d.failed_check ? ' at ' + d.failed_check : '') +
+        (d.reason_codes && d.reason_codes.length ? '  ' + d.reason_codes.join(',') : '');
+    }
+    if (e.event === 'decision_made') {
+      return id + '  [L4] decision: ' + d.outcome + (d.reason_codes && d.reason_codes.length ? '  ' + d.reason_codes.join(',') : '');
+    }
+    return id + '  [' + e.layer + '] ' + e.event;
+  }
+
+  function renderPortfolio(p) {
+    const stats = [
+      { label: 'Claims', value: p.claims },
+      { label: 'INR held', value: 'INR ' + p.inr_held.toLocaleString('en-IN') },
+      { label: 'INR released', value: 'INR ' + p.inr_released.toLocaleString('en-IN') },
+      { label: 'Review queue', value: p.review_queue_depth },
+      { label: 'No model call', value: p.resolved_without_model_call + '/' + p.claims },
+      { label: 'APPROVE / REVIEW / DENY', value: p.outcome_counts.APPROVE + ' / ' + p.outcome_counts.REVIEW + ' / ' + p.outcome_counts.DENY_RECOMMEND },
+    ];
+    portfolioEl.innerHTML = stats.map(function (s) {
+      return '<div class="stat"><div class="label">' + s.label + '</div><div class="value" style="font-size:17px;">' + s.value + '</div></div>';
+    }).join('');
+  }
+
+  function addCard(c) {
+    const div = document.createElement('div');
+    div.className = 'live-card' + (c.mismatch ? ' mismatch' : '');
+    div.innerHTML =
+      '<div class="top"><b>' + escHtml(c.claim_id) + '</b><span class="outcome ' + c.outcome + '">' + c.outcome + '</span></div>' +
+      '<div class="scn">' + escHtml(c.scenario) + ' &middot; ground truth: ' + escHtml(c.ground_truth) +
+      (c.mismatch ? '<span class="wrong-badge">GOT IT WRONG</span>' : '') + '</div>' +
+      '<div>codes: ' + (c.reason_codes.length ? escHtml(c.reason_codes.join(', ')) : '(none)') +
+      ' &middot; conf ' + (c.confidence == null ? '-' : c.confidence.toFixed(2)) + '</div>' +
+      '<div class="summ">' + escHtml(c.summary) + '</div>';
+    cardsEl.prepend(div);
+  }
+
+  let claimsSeen = 0;
+
+  async function run(scope) {
+    logEl.textContent = '';
+    cardsEl.innerHTML = '';
+    portfolioEl.innerHTML = '';
+    claimsSeen = 0;
+    sampleBtn.disabled = true;
+    fullBtn.disabled = true;
+    statusEl.textContent = 'starting...';
+    try {
+      const resp = await fetch('/api/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope: scope }),
+      });
+      if (resp.status === 409) {
+        const j = await resp.json();
+        log('ERROR: ' + j.message);
+        statusEl.textContent = 'busy';
+        return;
+      }
+      if (!resp.body) throw new Error('no response body (SSE unsupported by this browser)');
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buf += decoder.decode(chunk.value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\\n\\n')) !== -1) {
+          const raw = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          handleFrame(raw);
+        }
+      }
+      statusEl.textContent = 'done';
+    } catch (err) {
+      log('ERROR: ' + (err && err.message ? err.message : err) + ' - is \`npm run demo:server\` running?');
+      statusEl.textContent = 'failed';
+    } finally {
+      sampleBtn.disabled = false;
+      fullBtn.disabled = false;
+    }
+  }
+
+  function handleFrame(raw) {
+    let eventName = 'message';
+    let dataStr = '';
+    raw.split('\\n').forEach(function (line) {
+      if (line.indexOf('event:') === 0) eventName = line.slice(6).trim();
+      else if (line.indexOf('data:') === 0) dataStr += line.slice(5).trim();
+    });
+    if (!dataStr) return;
+    let payload;
+    try { payload = JSON.parse(dataStr); } catch (e) { return; }
+    onEvent(eventName, payload);
+  }
+
+  function onEvent(name, payload) {
+    if (name === 'error') {
+      log('ERROR: ' + payload.message);
+      statusEl.textContent = 'error';
+      return;
+    }
+    if (name === 'log') {
+      log(payload.message);
+      return;
+    }
+    if (name === 'start') {
+      // effort is Anthropic-only; the server sends null on the Gemini path
+      // rather than printing an effort that had no bearing on the run.
+      var modelLabel = (payload.provider ? payload.provider + '/' : '') + payload.model + (payload.effort ? ' (' + payload.effort + ')' : '');
+      log('run started: ' + payload.claims + ' claim(s), model=' + modelLabel + ', MODE=' + payload.mode + ' LLM_MODE=' + payload.llm_mode);
+      statusEl.textContent = 'running 0/' + payload.claims;
+      return;
+    }
+    if (name === 'claim_start') {
+      log('--- ' + payload.claim_id + ' (' + payload.scenario + ') "' + (payload.product_title || '') + '" INR ' + payload.amount_inr);
+      return;
+    }
+    if (name === 'audit') {
+      log(fmtAudit(payload));
+      return;
+    }
+    if (name === 'claim_done') {
+      claimsSeen += 1;
+      log(payload.claim_id + '  => ' + payload.outcome + (payload.mismatch ? '  (GOT IT WRONG vs ground truth)' : ''));
+      addCard(payload);
+      statusEl.textContent = 'running, ' + claimsSeen + ' done';
+      return;
+    }
+    if (name === 'summary') {
+      renderPortfolio(payload);
+      log('portfolio: ' + payload.claims + ' claims, INR ' + payload.inr_held + ' held, INR ' + payload.inr_released + ' released, spend INR ' + payload.total_cost_inr.toFixed(3));
+      return;
+    }
+    if (name === 'done') {
+      log('run complete.');
+    }
+  }
+
+  sampleBtn.addEventListener('click', function () { run('sample'); });
+  // The full batch is 50 claims / ~42 live model calls. Gemini free-tier quota
+  // is per-model and per-day; exhausting it mid-run trips the circuit breaker
+  // and every remaining claim fail-safes to REVIEW - a run that measures the
+  // rate limiter rather than the verifier. Confirm before spending it.
+  fullBtn.addEventListener('click', function () {
+    if (window.confirm('Run the full batch?\n\n50 claims, ~42 live model calls, roughly 7 minutes of real API spend.\n\nIf the provider free-tier quota runs out mid-run the circuit breaker trips and the remaining claims fail-safe to REVIEW. Use "Run sample" (7 claims, one per scenario) for a demo.')) {
+      run('full');
+    }
+  });
 })();
 </script>
 </body>

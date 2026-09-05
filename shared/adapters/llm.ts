@@ -1,8 +1,14 @@
 /**
- * LLM adapter - Claude multimodal wrapper for the L3 Claim Verifier.
+ * LLM adapter - multimodal wrapper for the L3 Claim Verifier.
  *
  * This is the ONLY place an LLM is reachable from. All matching, arithmetic,
  * thresholds and routing elsewhere in RCIE are deterministic code.
+ *
+ * Two live providers are implemented, selected by LLM_PROVIDER (see
+ * `llmProvider` below): Google Gemini (the default) and Anthropic Claude
+ * (kept in the repo, opt in with LLM_PROVIDER=anthropic). Both speak the same
+ * LlmAdapter interface, so nothing outside this file - L3, L4, the pipeline,
+ * eval, the dashboard - knows or cares which provider answered a request.
  *
  * The mock adapter replays scripted verifier RESPONSES so the pipeline can be
  * exercised offline. It contains no image handling of any kind: it neither reads,
@@ -10,6 +16,18 @@
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { llmMode } from '../mode.ts';
+
+export type LlmProvider = 'anthropic' | 'gemini';
+
+/**
+ * LLM_PROVIDER=anthropic opts back into Claude. Unset, empty, or any other
+ * value defaults to Gemini - the current default live L3 provider. This is
+ * the only switch: it never affects payments, store or notifier, which stay
+ * on MODE as always.
+ */
+export function llmProvider(): LlmProvider {
+  return process.env.LLM_PROVIDER === 'anthropic' ? 'anthropic' : 'gemini';
+}
 
 export class LlmTimeoutError extends Error {
   readonly code = 'timeout' as const;
@@ -165,17 +183,21 @@ export function createMockLlmAdapter(options: MockLlmOptions): MockLlmAdapter {
 }
 
 // --------------------------------------------------------------------------
-// Live - Anthropic Messages API (multimodal)
+// Live - Anthropic Messages API (multimodal). Kept in the repo, opt in with
+// LLM_PROVIDER=anthropic; Gemini (below) is the default live provider.
 // --------------------------------------------------------------------------
 
 export interface LiveLlmOptions {
-  /** Model id, e.g. `claude-opus-5`. */
+  /**
+   * Model id for the Anthropic path, e.g. `claude-opus-5`. Ignored on the
+   * Gemini path - see the note in `createLiveLlmAdapter`.
+   */
   model: string;
-  /** Reasoning effort passed through as `output_config.effort`. */
+  /** Reasoning effort passed through as `output_config.effort`. Anthropic-only. */
   effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 }
 
-class LiveLlm implements LlmAdapter {
+class AnthropicLlm implements LlmAdapter {
   readonly kind = 'live' as const;
   readonly model_version: string;
   #client: Anthropic;
@@ -267,18 +289,211 @@ class LiveLlm implements LlmAdapter {
   }
 }
 
+// --------------------------------------------------------------------------
+// Live - Google Gemini generateContent API (multimodal). The default live
+// provider (see `llmProvider`). Talks to the stable, generally-available
+// `models/{model}:generateContent` REST endpoint directly over `fetch` - no
+// SDK dependency, so swapping providers adds nothing to package.json.
+// --------------------------------------------------------------------------
+
+const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
+
+interface GeminiOptions {
+  model: string;
+  apiKey: string;
+}
+
+interface GeminiPart {
+  text?: string;
+  inlineData?: { mimeType: string; data: string };
+}
+
+interface GeminiResponse {
+  candidates?: Array<{
+    content?: { parts?: GeminiPart[] };
+    finishReason?: string;
+  }>;
+  usageMetadata?: {
+    promptTokenCount?: number;
+    candidatesTokenCount?: number;
+  };
+  error?: { code: number; message: string; status: string };
+}
+
+/**
+ * Strips schema keys the Gemini API's `responseSchema` (an OpenAPI 3.0
+ * subset) does not accept - `additionalProperties` chiefly - so the same
+ * VERDICT_JSON_SCHEMA the Anthropic path sends still reaches Gemini without
+ * a 400. This narrows the failure surface exactly as the comment on
+ * VERDICT_JSON_SCHEMA (layers/L3-verifier/index.ts) already documents for
+ * the Anthropic path: it does not replace `validateVerdict`, which still
+ * runs, unmodified, on every response from either provider.
+ */
+function toGeminiSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const clone = JSON.parse(JSON.stringify(schema)) as Record<string, unknown>;
+  const strip = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      node.forEach(strip);
+      return;
+    }
+    if (node !== null && typeof node === 'object') {
+      delete (node as Record<string, unknown>)['additionalProperties'];
+      for (const v of Object.values(node as Record<string, unknown>)) strip(v);
+    }
+  };
+  strip(clone);
+  return clone;
+}
+
+class GeminiLlm implements LlmAdapter {
+  readonly kind = 'live' as const;
+  readonly model_version: string;
+  #apiKey: string;
+  #calls = 0;
+
+  constructor(options: GeminiOptions) {
+    this.model_version = options.model;
+    this.#apiKey = options.apiKey;
+  }
+
+  get call_count(): number {
+    return this.#calls;
+  }
+
+  async complete(request: LlmRequest): Promise<LlmResponse> {
+    this.#calls += 1;
+    const startedAt = performance.now();
+
+    // Images first, then the instruction text - same order as the Anthropic
+    // path and the same reason: the text block carries the fenced, untrusted
+    // claim data.
+    const parts: GeminiPart[] = [];
+    for (const image of request.images) {
+      if (image.file_id) {
+        // The Files API id path is Anthropic-specific plumbing (eval's
+        // oversized-upload path); not implemented for Gemini. Refusing beats
+        // silently dropping the image and scoring a request the model never saw.
+        throw new LlmTransportError(
+          `evidence ${image.image_ref} arrived as a Files API id - not supported on the ` +
+            'Gemini path, refusing to send a request the model cannot see',
+        );
+      }
+      if (image.data_base64 === null) {
+        throw new LlmTransportError(
+          `evidence ${image.image_ref} has no bytes - refusing to send a live ` +
+            'request the model cannot see',
+        );
+      }
+      parts.push({ inlineData: { mimeType: image.media_type, data: image.data_base64 } });
+    }
+    parts.push({ text: request.user_text });
+
+    const generationConfig: Record<string, unknown> = {
+      maxOutputTokens: request.max_tokens,
+      // This model thinks by default, which routinely pushes a real
+      // multimodal call past L3's fixed timeout_ms (layers/L3-verifier,
+      // shared/config/thresholds.json - both out of scope for this change).
+      // Disabling it keeps the adapter within a budget this file does not
+      // control, at the cost of the model's extended reasoning; the strict
+      // schema check and the fail-safe REVIEW/timeout path are what actually
+      // guarantee correctness either way.
+      thinkingConfig: { thinkingBudget: 0 },
+    };
+    if (request.output_schema) {
+      generationConfig['responseMimeType'] = 'application/json';
+      generationConfig['responseSchema'] = toGeminiSchema(request.output_schema);
+    }
+
+    const body = {
+      systemInstruction: { parts: [{ text: request.system }] },
+      contents: [{ role: 'user', parts }],
+      generationConfig,
+    };
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), request.timeout_ms);
+    let res: Response;
+    try {
+      res = await fetch(
+        `${GEMINI_API_BASE}/models/${encodeURIComponent(this.model_version)}:generateContent`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': this.#apiKey },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        },
+      );
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw new LlmTimeoutError(`live: no response within ${request.timeout_ms}ms`);
+      }
+      throw new LlmTransportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      clearTimeout(timer);
+    }
+
+    const parsed = (await res.json().catch(() => null)) as GeminiResponse | null;
+
+    if (!res.ok) {
+      const message = parsed?.error?.message ?? `${res.status} ${res.statusText}`;
+      throw new LlmTransportError(`live: ${res.status} ${message}`);
+    }
+    if (!parsed) {
+      throw new LlmTransportError('live: response was not JSON');
+    }
+
+    const candidate = parsed.candidates?.[0];
+    const text = (candidate?.content?.parts ?? []).map((p) => p.text ?? '').join('');
+
+    return {
+      text,
+      model_version: this.model_version,
+      input_tokens: parsed.usageMetadata?.promptTokenCount ?? 0,
+      output_tokens: parsed.usageMetadata?.candidatesTokenCount ?? 0,
+      latency_ms: Math.round(performance.now() - startedAt),
+      stop_reason: candidate?.finishReason ?? null,
+    };
+  }
+}
+
 /**
  * The live verifier adapter. Gated on LLM_MODE=live rather than the global MODE,
  * so a live verifier run cannot pull payments, store or notifier live with it.
+ * Provider is chosen by `llmProvider()` (LLM_PROVIDER=anthropic to opt back
+ * into Claude; Gemini is the default).
  */
 export function createLiveLlmAdapter(options: LiveLlmOptions): LlmAdapter {
   if (llmMode() !== 'live') {
     throw new Error('createLiveLlmAdapter requires LLM_MODE=live.');
   }
-  if (!process.env.ANTHROPIC_API_KEY) {
-    throw new Error('LLM_MODE=live requires ANTHROPIC_API_KEY in the environment (.env).');
+
+  if (llmProvider() === 'gemini') {
+    if (!process.env.GEMINI_API_KEY) {
+      throw new Error(
+        'LLM_MODE=live with the default Gemini provider requires GEMINI_API_KEY in the environment (.env).',
+      );
+    }
+    // `options.model`/`options.effort` arrive shaped for Anthropic - existing,
+    // unmodified callers (server.ts, eval/live_batch.ts) source them from
+    // ANTHROPIC_MODEL/ANTHROPIC_EFFORT and pass them regardless of provider.
+    // They do not apply to Gemini, so this branch ignores them and reads its
+    // own GEMINI_MODEL instead; "effort" has no Gemini equivalent here.
+    return new GeminiLlm({
+      // gemini-3.5-flash rather than the fastest available model: the newest
+      // flash tiers carry a free-tier cap of 20 requests/day, which a single
+      // batch exhausts - after which every claim fail-safes to REVIEW and the
+      // run measures the rate limiter instead of the verifier. Measured on a
+      // real FraudBench image: 3.5-flash ~10s, 2.5-flash ~39s (past any sane
+      // timeout), 3.8-flash ~6s but quota-capped.
+      model: process.env.GEMINI_MODEL ?? 'gemini-3.5-flash',
+      apiKey: process.env.GEMINI_API_KEY,
+    });
   }
-  return new LiveLlm(options);
+
+  if (!process.env.ANTHROPIC_API_KEY) {
+    throw new Error('LLM_PROVIDER=anthropic requires ANTHROPIC_API_KEY in the environment (.env).');
+  }
+  return new AnthropicLlm(options);
 }
 
 export function createLlmAdapter(options?: MockLlmOptions): LlmAdapter {

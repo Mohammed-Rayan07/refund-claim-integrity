@@ -100,7 +100,9 @@ Pure code, sub-millisecond, fully explainable without any model:
 Each failure emits a **reason code** and short-circuits — no model call spent.
 
 **F2. Claim-Conditioned Multimodal Verifier**
-Claude multimodal. Assesses evidence *against the specific claim and order*:
+A configured multimodal LLM (Gemini by default; Anthropic Claude available
+behind `LLM_PROVIDER=anthropic` - see `shared/adapters/llm.ts`). Assesses
+evidence *against the specific claim and order*:
 - Does visible damage match the damage described?
 - Does the product shown match the ordered SKU?
 - Are multiple views mutually consistent?
@@ -247,7 +249,7 @@ model at all. Production thinking, and a genuinely good number to show.
                                             ▼
                                  ┌──────────────────────┐
                                  │ L3 CLAIM VERIFIER    │  F2
-                                 │ Claude multimodal    │
+                                 │ Gemini (live LLM)    │
                                  │ claim-conditioned    │
                                  │ abstention allowed   │
                                  └──────────┬───────────┘
@@ -279,7 +281,7 @@ model at all. Production thinking, and a genuinely good number to show.
   /shared
     /adapters
       payments.ts                # Razorpay order/payment/refund state (mock + live)
-      llm.ts                     # Claude multimodal wrapper, model-agnostic interface
+      llm.ts                     # multimodal LLM wrapper (Gemini default, Anthropic behind a flag)
       store.ts                   # claims, decisions, hashes, audit
       notifier.ts                # human review queue alerts
     /config
@@ -310,7 +312,7 @@ model at all. Production thinking, and a genuinely good number to show.
   /dashboard
 ```
 
-**Stack:** TypeScript / Node 20+ · Claude (multimodal verifier) · SQLite or Postgres ·
+**Stack:** TypeScript / Node 20+ · Gemini (multimodal verifier; Anthropic Claude behind a flag) · SQLite or Postgres ·
 `MODE=mock|live` global adapter toggle · every live connection point marked
 `TODO(LIVE)` with its exact `.env` key.
 
@@ -492,7 +494,7 @@ zero model calls, zero network calls.
 Build:
 - `lib/sanitiser.ts` — F9 injection defense: fence claim text as data, detect
   instruction-like content, flag `injection_suspected`
-- **L3 Claim Verifier** — Claude multimodal, exact prompt from §7, strict JSON
+- **L3 Claim Verifier** — configured multimodal LLM (Gemini default), exact prompt from §7, strict JSON
   schema validation, abstention path
 - **L4 Decision Engine** — deterministic, cost-sensitive thresholds (F8), exact
   logic block from §7

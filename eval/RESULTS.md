@@ -1,6 +1,6 @@
 # RCIE evaluation
 
-Generated 2026-09-04T20:07:07.250Z · MODE=`mock` · config snapshot `81138c4ce3c85bcc` · 113 claims
+Generated 2026-09-05T16:49:22.803Z · MODE=`mock` · config snapshot `c489c3fa97197b97` · 113 claims
 
 **No live run present.** `eval/live-run.json` was not found, so every number in this document (including the table immediately below) comes from `MODE=mock` scripted verifier verdicts - none of it measures real detection accuracy. Run `npm run fetch:fraudbench` then `LLM_MODE=live npm run eval:live` to add a real section above this line.
 
@@ -97,13 +97,13 @@ B1 and B2 both score 0%: B1 never reads the claim text, and B2 has no notion of 
 | CLM_0103 | clean | REVIEW | 3299 | confidence 0.94 below 0.97 required at INR 3299 exposure |
 | CLM_0062 | clean | REVIEW | 3299 | confidence 0.94 below 0.97 required at INR 3299 exposure |
 | CLM_0068 | clean | REVIEW | 7499 | confidence 0.94 below 0.97 required at INR 7499 exposure |
-| CLM_0072 | verifier_timeout | REVIEW | 2199 | verifier timeout: mock: no response within 20000ms - failed safe to REVIEW |
+| CLM_0072 | verifier_timeout | REVIEW | 2199 | verifier timeout: mock: no response within 45000ms - failed safe to REVIEW |
 | CLM_0073 | evidence_insufficient | REVIEW | 2799 | verifier abstained: the damage area is out of frame in both views; cannot judge without a closer image. |
 | CLM_0074 | verifier_malformed | REVIEW | 1499 | verifier malformed_output: response was not JSON: Unexpected token 'S', "Sure - bas"... is not valid JSON - fa |
 | CLM_0075 | low_confidence | REVIEW | 7499 | confidence 0.61 below 0.97 required at INR 7499 exposure |
 | CLM_0076 | verifier_transport_error | REVIEW | 1199 | verifier transport_error: mock: upstream returned 503 - failed safe to REVIEW |
 | CLM_0078 | verifier_schema_invalid | REVIEW | 1899 | verifier schema_invalid: supports_claim not one of yes\|no\|insufficient - failed safe to REVIEW |
-| CLM_0080 | verifier_timeout | REVIEW | 1299 | verifier timeout: mock: no response within 20000ms - failed safe to REVIEW |
+| CLM_0080 | verifier_timeout | REVIEW | 1299 | verifier timeout: mock: no response within 45000ms - failed safe to REVIEW |
 | CLM_0053 | clean | REVIEW | 7499 | confidence 0.94 below 0.97 required at INR 7499 exposure |
 | CLM_0081 | evidence_insufficient | REVIEW | 1199 | verifier abstained: the damage area is out of frame in both views; cannot judge without a closer image. |
 | CLM_0082 | verifier_malformed | REVIEW | 3299 | verifier malformed_output: response was not JSON: Unexpected token 'S', "Sure - bas"... is not valid JSON - fa |

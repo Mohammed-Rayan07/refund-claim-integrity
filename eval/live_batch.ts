@@ -27,7 +27,12 @@ import { loadConfig } from '../shared/config/index.ts';
 import { createPaymentsAdapter } from '../shared/adapters/payments.ts';
 import { createStoreAdapter } from '../shared/adapters/store.ts';
 import { createNotifierAdapter } from '../shared/adapters/notifier.ts';
-import { createLiveLlmAdapter, createMockLlmAdapter, type LlmAdapter } from '../shared/adapters/llm.ts';
+import {
+  createLiveLlmAdapter,
+  createMockLlmAdapter,
+  llmProvider,
+  type LlmAdapter,
+} from '../shared/adapters/llm.ts';
 import { createLocalFileEvidenceAdapter } from '../shared/adapters/evidence.ts';
 import { describeAll, type ReasonCode } from '../shared/lib/reasoncodes.ts';
 import { costOf } from '../shared/lib/budget.ts';
@@ -179,17 +184,23 @@ async function main(): Promise<void> {
     if (llmMode() !== 'live') {
       console.error(
         '\nLLM_MODE is not "live". Refusing to produce a run labelled live from mock verdicts.\n' +
-          'Set LLM_MODE=live (with ANTHROPIC_API_KEY in .env), or pass --bytes-check.',
+          "Set LLM_MODE=live (with the configured provider's API key in .env - GEMINI_API_KEY by\n" +
+          'default, ANTHROPIC_API_KEY when LLM_PROVIDER=anthropic), or pass --bytes-check.',
       );
       process.exitCode = 1;
       return;
     }
-    if (!process.env.ANTHROPIC_API_KEY) {
-      console.error('\nANTHROPIC_API_KEY is not set. Add it to .env before running live.');
+    // The API-key check is provider-aware and lives in createLiveLlmAdapter
+    // (shared/adapters/llm.ts). Pre-checking ANTHROPIC_API_KEY here would
+    // refuse to start a Gemini run - the default provider - over a key that
+    // path never reads.
+    try {
+      llm = createLiveLlmAdapter({ model, effort });
+    } catch (err) {
+      console.error(`\n${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
       return;
     }
-    llm = createLiveLlmAdapter({ model, effort });
 
     // Evidence too large to inline goes through the Files API. Anything that
     // cannot be transported at all is dropped from the batch and reported -
@@ -340,8 +351,13 @@ async function main(): Promise<void> {
     generated_at: new Date().toISOString(),
     mode,
     llm_mode: llmMode(),
-    model,
-    effort,
+    // The model that actually answered. `model`/`effort` above are the
+    // Anthropic-shaped inputs; createLiveLlmAdapter ignores them on the Gemini
+    // path and reads GEMINI_MODEL itself, so recording `model` here would
+    // attribute Gemini output to claude-opus-5 in eval/live-run.json and in
+    // every dashboard panel that reads it. `effort` is Anthropic-only.
+    model: llm.model_version,
+    effort: llmProvider() === 'anthropic' ? effort : 'n/a',
     prompt_version: 'l3-verifier-v1',
     b2_prompt_version: VLM_PROMPT_VERSION,
     config_snapshot_id: config.snapshot_id,

@@ -25,12 +25,17 @@ All four SPEC build chunks are complete.
   evaluation harness (baselines, holdout split, calibration, honest results
   table with a "where it fails" section).
 - **Live infrastructure (beyond the four chunks):** the L3 verifier's
-  `TODO(LIVE)` is implemented against the real Anthropic Messages API
+  `TODO(LIVE)` is implemented against a real multimodal LLM
   (`shared/adapters/llm.ts`), gated by `LLM_MODE=live` so a live verifier can
-  run against real evidence while payments/store/notifier stay on mock data; an
-  evidence adapter + JPEG decoder compute real perceptual hashes from real
-  image bytes; `npm run fetch:fraudbench` populates a local FraudBench subset
-  (consumed only, §0); `npm run eval:live` runs the pipeline against it.
+  run against real evidence while payments/store/notifier stay on mock data.
+  Provider is chosen by `LLM_PROVIDER`: **Google Gemini is the default**
+  (`generateContent`, no SDK dependency, `gemini-3.5-flash`), and Anthropic
+  Claude is kept in the repo behind `LLM_PROVIDER=anthropic`. Both speak the same adapter interface,
+  so nothing downstream of `llm.ts` - L3, L4, the pipeline, eval, the
+  dashboard - knows or cares which one answered. An evidence adapter + JPEG
+  decoder compute real perceptual hashes from real image bytes; `npm run
+  fetch:fraudbench` populates a local FraudBench subset (consumed only, §0);
+  `npm run eval:live` runs the pipeline against it.
 - **Chunk 4 — surface:** the dashboard (claim cards, evidence-reuse graph,
   reason-code legend, per-claim audit trail, portfolio view), F13 deterministic
   replay, F15 the human feedback loop, F16 idempotency and claim-level locking,
@@ -48,6 +53,28 @@ MODE=mock npm run demo:full     # the SPEC section 9 five-case walkthrough + F13
 MODE=mock npm run dashboard     # writes dashboard/index.html - open it in a browser
 MODE=mock npm run eval          # SPEC section 8 results table -> eval/RESULTS.md
 ```
+
+### Live demo server
+
+```bash
+npm run fetch:fraudbench   # once - populates the local FraudBench subset
+npm run demo:server        # http://localhost:8787
+```
+
+Serves the dashboard and adds a **Run sample** button that pushes 7 real claims
+(one per scenario) through the unmodified pipeline with a **live** L3 verifier,
+streaming the pipeline's own audit events over SSE as they fire. `MODE` stays
+`mock` throughout - only `LLM_MODE` goes live, so payments/store/notifier never
+leave mock data and no money-moving path exists. Needs `GEMINI_API_KEY` in
+`.env`. Leave the server running while the browser is open; connection refused
+in the browser means the process is not up.
+
+**Run full batch** is 50 claims / ~42 live model calls (~7 min) and prompts for
+confirmation first: Gemini free-tier quota is per-model and per-day, and
+exhausting it mid-run trips the circuit breaker so the remaining claims
+fail-safe to REVIEW - a run that measures the rate limiter, not the verifier.
+Prefer the sample for demos. See the `GEMINI_MODEL` note in
+`shared/config/env.example` for measured per-model latency and the quota trap.
 
 `demo:decide` runs two phases: a healthy verifier, then the verifier killed
 mid-run to show the queue degrading to REVIEW rather than approving anything.

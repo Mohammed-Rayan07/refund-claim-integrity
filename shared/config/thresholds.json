@@ -13,7 +13,7 @@
     "reuse_cut": 0.9
   },
   "verifier": {
-    "timeout_ms": 20000,
+    "timeout_ms": 45000,
     "max_retries": 1,
     "circuit_breaker_consecutive_failures": 4,
     "circuit_breaker_cooldown_ms": 60000

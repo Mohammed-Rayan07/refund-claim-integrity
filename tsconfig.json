@@ -15,5 +15,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["shared/**/*.ts", "layers/**/*.ts", "eval/**/*.ts", "scripts/**/*.ts", "dashboard/**/*.ts"]
+  "include": ["shared/**/*.ts", "layers/**/*.ts", "eval/**/*.ts", "scripts/**/*.ts", "dashboard/**/*.ts", "server.ts"]
 }
