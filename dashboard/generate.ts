@@ -15,6 +15,7 @@
  */
 import { writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import vm from 'node:vm';
 import { currentMode } from '../shared/mode.ts';
 import { loadConfig } from '../shared/config/index.ts';
 import { createPaymentsAdapter } from '../shared/adapters/payments.ts';
@@ -32,6 +33,53 @@ import { loadLiveRun, computeLiveMetrics } from '../eval/live_report.ts';
 import type { Decision, Outcome } from '../shared/types.ts';
 
 const MODEL_VERSION = 'claude-opus-5-mock';
+
+/**
+ * Build-time guard. The dashboard is one self-contained file assembled from a
+ * template literal, and a mis-escaped sequence can emit browser JavaScript that
+ * does not parse. A browser reports that only in its console - the page shell
+ * still renders, every data panel is blank, and it reads as "the dashboard has
+ * no data" rather than as a build failure. These two checks turn that into a
+ * loud, immediate build error.
+ */
+function assertBrowserScriptParses(html: string): void {
+  const blocks = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
+  if (blocks.length === 0) {
+    throw new Error('dashboard: no inline <script> block found in the generated page');
+  }
+  blocks.forEach((block, i) => {
+    try {
+      // Parses without executing - exactly what the browser does first.
+      new vm.Script(block[1] ?? '', { filename: `dashboard-inline-script-${i}.js` });
+    } catch (err) {
+      throw new Error(
+        `dashboard: inline <script> block ${i} is not valid JavaScript, so every panel ` +
+          `would render blank in the browser.\n  ${err instanceof Error ? err.message : String(err)}\n` +
+          '  Common cause: a newline or quote escape written with a single backslash inside ' +
+          'the template literal, which is consumed at generation time.',
+      );
+    }
+  });
+}
+
+/** The embedded payload must survive round-tripping, or every panel is empty. */
+function assertEmbeddedDataParses(html: string): void {
+  const m = html.match(/<script type="application\/json" id="data">([\s\S]*?)<\/script>/);
+  if (!m || !m[1]) {
+    throw new Error('dashboard: embedded data block is missing from the generated page');
+  }
+  let parsed: { claims?: unknown[] };
+  try {
+    parsed = JSON.parse(m[1].replace(/\\u003c/g, '<')) as { claims?: unknown[] };
+  } catch (err) {
+    throw new Error(
+      `dashboard: embedded JSON payload does not parse: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+  if (!Array.isArray(parsed.claims) || parsed.claims.length === 0) {
+    throw new Error('dashboard: embedded payload contains no claims - the page would render empty');
+  }
+}
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -230,6 +278,13 @@ async function main(): Promise<void> {
 
   const html = renderHtml(payload);
   const outPath = resolve(process.cwd(), 'dashboard/index.html');
+  assertEmbeddedDataParses(html);
+  // The page is assembled from a template literal, so a stray escape can emit
+  // JavaScript that does not parse. The browser reports that only in its
+  // console: the shell still renders and every data panel is silently blank,
+  // which looks like "the dashboard has no data" rather than a build error.
+  // Fail the build here instead of shipping a dashboard that cannot run.
+  assertBrowserScriptParses(html);
   writeFileSync(outPath, html, 'utf8');
   console.log(`dashboard written to ${outPath}`);
   console.log(
@@ -761,7 +816,13 @@ function renderHtml(payload: unknown): string {
   // and every remaining claim fail-safes to REVIEW - a run that measures the
   // rate limiter rather than the verifier. Confirm before spending it.
   fullBtn.addEventListener('click', function () {
-    if (window.confirm('Run the full batch?\n\n50 claims, ~42 live model calls, roughly 7 minutes of real API spend.\n\nIf the provider free-tier quota runs out mid-run the circuit breaker trips and the remaining claims fail-safe to REVIEW. Use "Run sample" (7 claims, one per scenario) for a demo.')) {
+    // NOTE: this whole block is emitted from a template literal, so a newline
+    // escape must be written with a doubled backslash. A single-backslash one
+    // is consumed at generation time, becomes a real line break inside a JS
+    // string literal in the output, and is a SyntaxError that kills the entire
+    // dashboard script - every panel then renders blank. Applies to comments
+    // in here too, which is why this one spells it out in words.
+    if (window.confirm('Run the full batch?\\n\\n50 claims, ~42 live model calls, roughly 7 minutes of real API spend.\\n\\nIf the free-tier quota runs out mid-run the circuit breaker trips and the remaining claims fail-safe to REVIEW. Use "Run sample" for a demo.')) {
       run('full');
     }
   });
