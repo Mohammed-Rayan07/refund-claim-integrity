@@ -1,6 +1,6 @@
 # RCIE evaluation
 
-Generated 2026-09-05T16:49:22.803Z · MODE=`mock` · config snapshot `c489c3fa97197b97` · 113 claims
+Generated 2026-09-05T17:49:32.835Z · MODE=`mock` · config snapshot `c489c3fa97197b97` · 113 claims
 
 **No live run present.** `eval/live-run.json` was not found, so every number in this document (including the table immediately below) comes from `MODE=mock` scripted verifier verdicts - none of it measures real detection accuracy. Run `npm run fetch:fraudbench` then `LLM_MODE=live npm run eval:live` to add a real section above this line.
 
