@@ -46,12 +46,26 @@ All four SPEC build chunks are complete.
 
 Requires Node 20+ (TypeScript runs directly; no install needed for the demos).
 
+`MODE=mock` is already the default (and is set in `.env`), so the plain form
+below works in **every** shell - PowerShell included:
+
+```
+npm run demo:spine    # L1 -> L4, deterministic-only, zero model calls
+npm run demo:decide   # L0 -> L1 -> L2 -> L3 -> L4, all outcomes + fail-safe
+npm run demo:full     # the SPEC section 9 five-case walkthrough + F13/F15/F16 proofs + portfolio
+npm run dashboard     # writes dashboard/index.html - open it in a browser
+npm run eval          # SPEC section 8 results table -> eval/RESULTS.md
+```
+
+To force the mode explicitly, the syntax is shell-specific. **Do not paste the
+bash form into PowerShell** - `MODE=mock npm run ...` fails there with
+`'MODE=mock' is not recognized`, because PowerShell has no inline env-var prefix.
+
 ```bash
-MODE=mock npm run demo:spine    # L1 -> L4, deterministic-only, zero model calls
-MODE=mock npm run demo:decide   # L0 -> L1 -> L2 -> L3 -> L4, all outcomes + fail-safe
-MODE=mock npm run demo:full     # the SPEC section 9 five-case walkthrough + F13/F15/F16 proofs + portfolio
-MODE=mock npm run dashboard     # writes dashboard/index.html - open it in a browser
-MODE=mock npm run eval          # SPEC section 8 results table -> eval/RESULTS.md
+MODE=mock npm run demo:spine          # bash / zsh (macOS, Linux, Git Bash)
+```
+```powershell
+$env:MODE = 'mock'; npm run demo:spine   # PowerShell (Windows)
 ```
 
 ### Live demo server
